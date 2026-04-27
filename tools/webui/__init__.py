@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import Callable
 
 import gradio as gr
@@ -5,8 +7,58 @@ import gradio as gr
 from fish_speech.i18n import i18n
 from tools.webui.variables import HEADER_MD, TEXTBOX_PLACEHOLDER
 
+# ── Character voice loader ──────────────────────────────────────────────────
+VOICES_DIR = Path(__file__).resolve().parent.parent.parent / "voices"
+
+
+def get_character_choices():
+    """Return a list of character names (folder names) found in /voices/."""
+    if not VOICES_DIR.exists():
+        return []
+    return sorted([d.name for d in VOICES_DIR.iterdir() if d.is_dir()])
+
+
+def get_clips_for_character(character: str):
+    """Return a list of .wav file paths inside voices/<character>/."""
+    if not character:
+        return []
+    char_dir = VOICES_DIR / character
+    if not char_dir.exists():
+        return []
+    clips = sorted(char_dir.glob("*.wav"))
+    return [str(c) for c in clips]
+
+
+def get_first_clip(character: str):
+    """Return the path of the first .wav clip for a character, or None."""
+    clips = get_clips_for_character(character)
+    return clips[0] if clips else None
+
+
+def on_character_change(character: str):
+    """When character dropdown changes, update the clip dropdown and audio preview."""
+    clips = get_clips_for_character(character)
+    clip_labels = [Path(c).name for c in clips]
+    first_clip = clips[0] if clips else None
+    return gr.update(choices=clip_labels, value=clip_labels[0] if clip_labels else None), first_clip
+
+
+def on_clip_select(character: str, clip_name: str):
+    """When a specific clip is chosen, return its full path for the audio component."""
+    if not character or not clip_name:
+        return None
+    return str(VOICES_DIR / character / clip_name)
+
+
+# ── App builder ─────────────────────────────────────────────────────────────
 
 def build_app(inference_fct: Callable, theme: str = "light") -> gr.Blocks:
+    characters = get_character_choices()
+    initial_character = characters[0] if characters else None
+    initial_clips = get_clips_for_character(initial_character)
+    initial_clip_labels = [Path(c).name for c in initial_clips]
+    initial_clip_path = initial_clips[0] if initial_clips else None
+
     with gr.Blocks(theme=gr.themes.Base()) as app:
         gr.Markdown(HEADER_MD)
 
@@ -79,16 +131,37 @@ def build_app(inference_fct: Callable, theme: str = "light") -> gr.Blocks:
                                 )
 
                         with gr.Tab(label=i18n("Reference Audio")):
+                            gr.Markdown("### 🎙️ Character Voice")
+
                             with gr.Row():
-                                gr.Markdown(
-                                    i18n(
-                                        "5 to 10 seconds of reference audio, useful for specifying speaker."
-                                    )
+                                character_dropdown = gr.Dropdown(
+                                    label="Character",
+                                    choices=characters,
+                                    value=initial_character,
+                                    interactive=True,
                                 )
+
+                            with gr.Row():
+                                clip_dropdown = gr.Dropdown(
+                                    label="Voice Clip",
+                                    choices=initial_clip_labels,
+                                    value=initial_clip_labels[0] if initial_clip_labels else None,
+                                    interactive=True,
+                                )
+
+                            with gr.Row():
+                                reference_audio = gr.Audio(
+                                    label=i18n("Reference Audio Preview"),
+                                    value=initial_clip_path,
+                                    type="filepath",
+                                    interactive=False,
+                                )
+
                             with gr.Row():
                                 reference_id = gr.Textbox(
                                     label=i18n("Reference ID"),
-                                    placeholder="Leave empty to use uploaded references",
+                                    placeholder="Leave empty to use selected character above",
+                                    visible=False,  # hidden, not needed with dropdown
                                 )
 
                             with gr.Row():
@@ -98,11 +171,6 @@ def build_app(inference_fct: Callable, theme: str = "light") -> gr.Blocks:
                                     value="on",
                                 )
 
-                            with gr.Row():
-                                reference_audio = gr.Audio(
-                                    label=i18n("Reference Audio"),
-                                    type="filepath",
-                                )
                             with gr.Row():
                                 reference_text = gr.Textbox(
                                     label=i18n("Reference Text"),
@@ -132,7 +200,20 @@ def build_app(inference_fct: Callable, theme: str = "light") -> gr.Blocks:
                             variant="primary",
                         )
 
-        # Submit
+        # ── Dropdown interactions ────────────────────────────────────────────
+        character_dropdown.change(
+            fn=on_character_change,
+            inputs=[character_dropdown],
+            outputs=[clip_dropdown, reference_audio],
+        )
+
+        clip_dropdown.change(
+            fn=on_clip_select,
+            inputs=[character_dropdown, clip_dropdown],
+            outputs=[reference_audio],
+        )
+
+        # ── Submit ───────────────────────────────────────────────────────────
         generate.click(
             inference_fct,
             [
